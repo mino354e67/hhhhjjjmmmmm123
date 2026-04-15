@@ -28,6 +28,24 @@ docker compose logs -f
 tail -f logs/scheduler.log
 ```
 
+> **国内 VPS 注意**：`Dockerfile` 默认通过 DaoCloud 镜像拉取 `python:3.12-alpine`，
+> Alpine 的 apk 源也已切到中科大镜像，所以构建全程不走国际网络。
+> 如果你已经配置了 `/etc/docker/daemon.json` 的 `registry-mirrors`，
+> 可以把 `FROM` 改回 `python:3.12-alpine` 使用你自己的镜像策略。
+> 一个可选的 daemon.json 示例：
+>
+> ```json
+> {
+>   "registry-mirrors": [
+>     "https://docker.m.daocloud.io",
+>     "https://docker.1ms.run",
+>     "https://dockerproxy.cn"
+>   ]
+> }
+> ```
+>
+> 编辑完执行 `systemctl restart docker`。
+
 首次启动后，你应该能看到：
 
 ```
