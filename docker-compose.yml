@@ -1,0 +1,17 @@
+services:
+  speedtest-scheduler:
+    build: .
+    image: speedtest-scheduler:latest
+    container_name: speedtest-scheduler
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      WINDOW_START: "02:00"
+      WINDOW_END: "06:00"
+      MIN_GB: "10"
+      MAX_GB: "30"
+      RATE_LIMIT: "12500k"   # 约 100 Mbps，curl --limit-rate 格式
+      MIN_FILE_MB: "500"
+    volumes:
+      - ./logs:/app/logs
+      - ./urls.txt:/app/urls.txt:ro

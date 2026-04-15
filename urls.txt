@@ -1,0 +1,42 @@
+# 下载源列表（仅限中国大陆镜像站，避免产生国际出境流量）
+#
+# 选源原则:
+# 1. 域名落地在中国大陆境内（高校教育网 / 国内云厂商 CDN）
+# 2. 单文件 >= 500 MB，减少 HTTP 握手次数
+# 3. 长期稳定的 Linux 发行版 ISO / DVD 映像
+#
+# 可以根据 VPS 所在运营商（电信/联通/移动）取消注释最优线路。
+# 注释以 # 开头，空行会被忽略。
+# 启动时 scheduler.py 会对每条 URL 做 HEAD 预检，自动剔除不可用或过小的文件。
+
+# ===== 清华 TUNA =====
+https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.5.0-amd64-DVD-1.iso
+https://mirrors.tuna.tsinghua.edu.cn/centos-vault/7.9.2009/isos/x86_64/CentOS-7-x86_64-Everything-2009.iso
+
+# ===== 中科大 USTC =====
+https://mirrors.ustc.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.ustc.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.5.0-amd64-DVD-1.iso
+https://mirrors.ustc.edu.cn/centos-vault/7.9.2009/isos/x86_64/CentOS-7-x86_64-Everything-2009.iso
+
+# ===== 北外 BFSU =====
+https://mirrors.bfsu.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.bfsu.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.5.0-amd64-DVD-1.iso
+
+# ===== 南大 NJU =====
+https://mirrors.nju.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.nju.edu.cn/debian-cd/current/amd64/iso-dvd/debian-12.5.0-amd64-DVD-1.iso
+
+# ===== 阿里云开源镜像 =====
+https://mirrors.aliyun.com/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.aliyun.com/centos-vault/7.9.2009/isos/x86_64/CentOS-7-x86_64-Everything-2009.iso
+
+# ===== 腾讯云开源镜像 =====
+https://mirrors.cloud.tencent.com/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+https://mirrors.cloud.tencent.com/centos-vault/7.9.2009/isos/x86_64/CentOS-7-x86_64-Everything-2009.iso
+
+# ===== 华为云开源镜像 =====
+https://mirrors.huaweicloud.com/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
+
+# ===== 网易开源镜像 =====
+https://mirrors.163.com/ubuntu-releases/22.04/ubuntu-22.04.4-desktop-amd64.iso
