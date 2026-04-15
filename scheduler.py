@@ -162,9 +162,13 @@ def preflight(urls: list[str], cfg: dict, log: logging.Logger) -> list[tuple[str
     return good
 
 
-def curl_download(url: str, cfg: dict, log: logging.Logger) -> int:
+def curl_download(url: str, cfg: dict, log: logging.Logger, max_bytes: int | None = None) -> int:
     """
     调用 curl 下载到 /dev/null，返回本次实际下载字节数。
+
+    当 max_bytes 给定时，通过 HTTP Range 头只请求前 max_bytes 个字节，
+    这样既能精确控制 session 总量（避免 "为了凑 100 MB 下载整个 10 GB 文件"），
+    又能在 SIGINT 打断时让 curl 正常收尾打印 -w 统计。
     """
     cmd = [
         "curl",
@@ -180,8 +184,10 @@ def curl_download(url: str, cfg: dict, log: logging.Logger) -> int:
         str(cfg["max_time"]),
         "-w",
         "%{size_download} %{speed_download} %{http_code}\n",
-        url,
     ]
+    if max_bytes is not None and max_bytes > 0:
+        cmd += ["-r", f"0-{max_bytes - 1}"]
+    cmd.append(url)
     start = time.monotonic()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -234,16 +240,21 @@ def run_download_session(cfg: dict, log: logging.Logger, target_bytes: int, urls
     round_no = 0
     while downloaded < target_bytes and not _shutdown:
         round_no += 1
+        round_start_downloaded = downloaded
         pool = urls_with_size[:]
         random.shuffle(pool)
-        for url, _size in pool:
+        for url, file_size in pool:
             if _shutdown or downloaded >= target_bytes:
                 break
-            got = curl_download(url, cfg, log)
+            remaining = target_bytes - downloaded
+            # 按 "剩余目标" 和 "文件大小" 取较小值作为本次 curl 的 Range 上限，
+            # 避免一次 curl 拉整个 10 GB 文件却只为凑最后的几百 MB。
+            cap = min(remaining, file_size) if file_size > 0 else remaining
+            got = curl_download(url, cfg, log, max_bytes=cap)
             downloaded += got
             log.info("累计 %.2f / %.2f GB", downloaded / 1024 ** 3, target_bytes / 1024 ** 3)
-        if downloaded == 0:
-            log.error("第 %d 轮全部失败，终止 session", round_no)
+        if downloaded == round_start_downloaded:
+            log.error("第 %d 轮没有任何进展，终止 session", round_no)
             return
         if round_no >= 10:
             log.error("超过 10 轮仍未达标，终止 session")
