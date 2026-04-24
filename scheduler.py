@@ -25,8 +25,23 @@ from urllib.parse import urlparse
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", "/app/logs"))
 LOG_FILE = LOG_DIR / "scheduler.log"
+LAST_RUN_FILE = LOG_DIR / "last_run_date.txt"
 
 _shutdown = False
+
+
+def load_last_run_date() -> dt.date | None:
+    try:
+        return dt.date.fromisoformat(LAST_RUN_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def save_last_run_date(date: dt.date) -> None:
+    try:
+        LAST_RUN_FILE.write_text(date.isoformat(), encoding="utf-8")
+    except Exception as e:
+        logging.getLogger("scheduler").warning("写 last_run_date 失败: %s", e)
 
 
 def _install_signal_handlers() -> None:
@@ -72,8 +87,8 @@ def load_config() -> dict:
     cfg = {
         "window_start": _parse_hhmm(os.environ.get("WINDOW_START", "02:00"), "WINDOW_START"),
         "window_end": _parse_hhmm(os.environ.get("WINDOW_END", "06:00"), "WINDOW_END"),
-        "min_gb": float(os.environ.get("MIN_GB", "10")),
-        "max_gb": float(os.environ.get("MAX_GB", "30")),
+        "min_files": int(os.environ.get("MIN_FILES", "1")),
+        "max_files": int(os.environ.get("MAX_FILES", "3")),
         "urls_file": Path(os.environ.get("URLS_FILE", "/app/urls.txt")),
         "rate_limit": os.environ.get("RATE_LIMIT", "12500k"),  # ≈100 Mbps
         "connect_timeout": int(os.environ.get("CONNECT_TIMEOUT", "15")),
@@ -82,8 +97,10 @@ def load_config() -> dict:
     }
     if cfg["window_start"] == cfg["window_end"]:
         raise SystemExit("WINDOW_START 不能等于 WINDOW_END")
-    if cfg["min_gb"] > cfg["max_gb"]:
-        raise SystemExit("MIN_GB 不能大于 MAX_GB")
+    if cfg["min_files"] < 1 or cfg["max_files"] < 1:
+        raise SystemExit("MIN_FILES / MAX_FILES 必须 >= 1")
+    if cfg["min_files"] > cfg["max_files"]:
+        raise SystemExit("MIN_FILES 不能大于 MAX_FILES")
     return cfg
 
 
@@ -166,9 +183,8 @@ def curl_download(url: str, cfg: dict, log: logging.Logger, max_bytes: int | Non
     """
     调用 curl 下载到 /dev/null，返回本次实际下载字节数。
 
-    当 max_bytes 给定时，通过 HTTP Range 头只请求前 max_bytes 个字节，
-    这样既能精确控制 session 总量（避免 "为了凑 100 MB 下载整个 10 GB 文件"），
-    又能在 SIGINT 打断时让 curl 正常收尾打印 -w 统计。
+    当 max_bytes 给定时，通过 HTTP Range 头只请求前 max_bytes 个字节（调试用）；
+    否则下载整个文件。
     """
     cmd = [
         "curl",
@@ -224,41 +240,31 @@ def curl_download(url: str, cfg: dict, log: logging.Logger, max_bytes: int | Non
     return size
 
 
-def run_download_session(cfg: dict, log: logging.Logger, target_bytes: int, urls_with_size: list[tuple[str, int]]) -> None:
+def run_download_session(cfg: dict, log: logging.Logger, target_files: int, urls_with_size: list[tuple[str, int]]) -> None:
     if not urls_with_size:
         log.error("没有可用 URL，跳过本次 session")
         return
 
+    n = min(target_files, len(urls_with_size))
+    selected = random.sample(urls_with_size, n)
+    planned_bytes = sum(size for _, size in selected)
     log.info(
-        "启动下载 session: 目标 %.2f GB, 限速 %s, 候选 %d 个 URL",
-        target_bytes / 1024 ** 3,
+        "启动下载 session: 目标 %d 个文件 (~%.2f GB), 限速 %s, 候选池 %d 个 URL",
+        n,
+        planned_bytes / 1024 ** 3,
         cfg["rate_limit"],
         len(urls_with_size),
     )
+
     downloaded = 0
     session_start = time.monotonic()
-    round_no = 0
-    while downloaded < target_bytes and not _shutdown:
-        round_no += 1
-        round_start_downloaded = downloaded
-        pool = urls_with_size[:]
-        random.shuffle(pool)
-        for url, file_size in pool:
-            if _shutdown or downloaded >= target_bytes:
-                break
-            remaining = target_bytes - downloaded
-            # 按 "剩余目标" 和 "文件大小" 取较小值作为本次 curl 的 Range 上限，
-            # 避免一次 curl 拉整个 10 GB 文件却只为凑最后的几百 MB。
-            cap = min(remaining, file_size) if file_size > 0 else remaining
-            got = curl_download(url, cfg, log, max_bytes=cap)
-            downloaded += got
-            log.info("累计 %.2f / %.2f GB", downloaded / 1024 ** 3, target_bytes / 1024 ** 3)
-        if downloaded == round_start_downloaded:
-            log.error("第 %d 轮没有任何进展，终止 session", round_no)
-            return
-        if round_no >= 10:
-            log.error("超过 10 轮仍未达标，终止 session")
-            return
+    for idx, (url, _file_size) in enumerate(selected, start=1):
+        if _shutdown:
+            break
+        log.info("文件 %d/%d: %s", idx, n, urlparse(url).netloc + urlparse(url).path)
+        got = curl_download(url, cfg, log)
+        downloaded += got
+        log.info("累计 %.2f GB (%d/%d 个文件)", downloaded / 1024 ** 3, idx, n)
 
     elapsed = time.monotonic() - session_start
     avg_mbps = (downloaded * 8 / 1024 / 1024) / elapsed if elapsed > 0 else 0
@@ -270,10 +276,10 @@ def run_download_session(cfg: dict, log: logging.Logger, target_bytes: int, urls
     )
 
 
-def next_run_time(cfg: dict, now: dt.datetime | None = None) -> dt.datetime:
+def next_run_time(cfg: dict, now: dt.datetime | None = None, *, skip_today: bool = False) -> dt.datetime:
     """
-    计算下一次触发时刻。如果当前时间早于今日窗口开始，则在今日窗口内随机；
-    否则在明日窗口内随机。窗口支持跨零点（end < start）。
+    计算下一次触发时刻。窗口支持跨零点（end < start）。
+    skip_today=True 时强制跳到明天窗口（今日已跑过 session）。
     """
     now = now or dt.datetime.now()
     ws, we = cfg["window_start"], cfg["window_end"]
@@ -287,16 +293,16 @@ def next_run_time(cfg: dict, now: dt.datetime | None = None) -> dt.datetime:
         return start, end
 
     today_start, today_end = _window_for(now.date())
-    if now < today_start:
+    if skip_today or now >= today_end:
+        start, end = _window_for(now.date() + dt.timedelta(days=1))
+    elif now < today_start:
         start, end = today_start, today_end
-    elif now < today_end:
-        # 已在窗口内，仍允许在剩余窗口随机（但至少 30 秒后）
+    else:
+        # 容器首次启动且落在今日窗口内，仍允许今日剩余窗口随机（至少 30 秒后）
         start = now + dt.timedelta(seconds=30)
         end = today_end
         if start >= end:
             start, end = _window_for(now.date() + dt.timedelta(days=1))
-    else:
-        start, end = _window_for(now.date() + dt.timedelta(days=1))
 
     delta = (end - start).total_seconds()
     return start + dt.timedelta(seconds=random.uniform(0, delta))
@@ -327,20 +333,25 @@ def main_loop(cfg: dict, log: logging.Logger) -> None:
     log.info("%d 个 URL 通过预检", len(good))
 
     while not _shutdown:
-        target = next_run_time(cfg)
+        now = dt.datetime.now()
+        last_run = load_last_run_date()
+        skip_today = (last_run == now.date())
+        if skip_today:
+            log.info("今日 (%s) 已完成一次 session，跳到明天窗口", now.date().isoformat())
+        target = next_run_time(cfg, now, skip_today=skip_today)
         log.info("下一次触发时刻: %s", target.strftime("%Y-%m-%d %H:%M:%S"))
         sleep_until(target, log)
         if _shutdown:
             break
-        gb = random.uniform(cfg["min_gb"], cfg["max_gb"])
-        target_bytes = int(gb * 1024 ** 3)
-        run_download_session(cfg, log, target_bytes, good)
+        target_files = random.randint(cfg["min_files"], cfg["max_files"])
+        run_download_session(cfg, log, target_files, good)
+        save_last_run_date(dt.datetime.now().date())
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="VPS 随机下行流量调度器")
     p.add_argument("--once", action="store_true", help="立即执行一次 download session 后退出（调试用）")
-    p.add_argument("--target-mb", type=float, default=None, help="配合 --once 使用，指定本次下载目标 MB")
+    p.add_argument("--files", type=int, default=None, help="配合 --once 使用，指定本次下载文件数（默认按 MIN_FILES~MAX_FILES 随机）")
     return p.parse_args()
 
 
@@ -349,11 +360,11 @@ def main() -> int:
     _install_signal_handlers()
     cfg = load_config()
     log.info(
-        "配置: 窗口 %s-%s, 每日 %.1f-%.1f GB, 限速 %s",
+        "配置: 窗口 %s-%s, 每天 %d-%d 个文件, 限速 %s",
         cfg["window_start"].strftime("%H:%M"),
         cfg["window_end"].strftime("%H:%M"),
-        cfg["min_gb"],
-        cfg["max_gb"],
+        cfg["min_files"],
+        cfg["max_files"],
         cfg["rate_limit"],
     )
     args = parse_args()
@@ -364,12 +375,11 @@ def main() -> int:
         if not good:
             log.error("所有 URL 预检失败")
             return 2
-        if args.target_mb is not None:
-            target_bytes = int(args.target_mb * 1024 * 1024)
+        if args.files is not None:
+            target_files = args.files
         else:
-            gb = random.uniform(cfg["min_gb"], cfg["max_gb"])
-            target_bytes = int(gb * 1024 ** 3)
-        run_download_session(cfg, log, target_bytes, good)
+            target_files = random.randint(cfg["min_files"], cfg["max_files"])
+        run_download_session(cfg, log, target_files, good)
         return 0
 
     try:

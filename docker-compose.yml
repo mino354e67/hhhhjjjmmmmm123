@@ -8,8 +8,8 @@ services:
       TZ: Asia/Shanghai
       WINDOW_START: "02:00"
       WINDOW_END: "06:00"
-      MIN_GB: "10"
-      MAX_GB: "30"
+      MIN_FILES: "1"         # 每天随机下载的 ISO 文件数下限
+      MAX_FILES: "3"         # 每天随机下载的 ISO 文件数上限
       RATE_LIMIT: "12500k"   # 约 100 Mbps，curl --limit-rate 格式
       MIN_FILE_MB: "500"
     volumes:
